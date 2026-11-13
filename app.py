@@ -26,7 +26,6 @@ def days_left(t): return (date.fromisoformat(t['deadline'])-date.today()).days
 
 def features(t): return [max(-10,min(90,days_left(t))),int(t['difficulty']),float(t['hours'])]
 
-# Учебная модель: демонстрационные синтетические примеры, не реальные ответы студентов.
 @st.cache_resource
 def get_model():
     rng=np.random.default_rng(42)
@@ -47,7 +46,6 @@ LEVEL={0:'🟢 Низкий',1:'🟠 Средний',2:'🔴 Высокий'}
 def priority(t):
     label=int(MODEL.predict([features(t)])[0])
     days=days_left(t)
-    # Просроченные задачи всегда критические, независимо от оценки модели.
     if days<0: label=2
     return label
 
@@ -138,7 +136,6 @@ elif page=='🗓️ Расписание':
         for t in tasks:
             if capacity<=.001: break
             if remaining[t['id']]<=.001: continue
-            # Планирование после дедлайна не допускается; просроченные задачи ставятся сразу.
             if date.fromisoformat(t['deadline'])<current and days_left(t)>=0: continue
             amount=min(capacity,remaining[t['id']])
             rows.append({'Дата':current.isoformat(),'Задание':t['name'],'Предмет':t['subject'],'Часов':round(amount,2),'Дедлайн':t['deadline']})
@@ -153,10 +150,3 @@ elif page=='🗓️ Расписание':
     unplanned=[t['name'] for t in tasks if remaining[t['id']]>.001]
     if unplanned: st.warning('Не удалось полностью распределить в выбранном периоде: '+', '.join(unplanned)+'. Увеличь количество часов или период планирования.')
     st.caption('Алгоритм распределяет задачи по приоритету и дедлайну. Это эвристический планировщик, не оптимизационная нейросеть.')
-
-else:
-    st.title('ℹ️ О проекте')
-    st.write('AI Student Planner — учебный веб-прототип для управления учебными задачами.')
-    st.write('Технологии: Python, Streamlit, Pandas, NumPy, scikit-learn.')
-    st.write('ML: RandomForestClassifier на синтетических данных. Реальное качество модели на студентах пока не оценивалось.')
-    st.write('Ограничения: данные хранятся локально на сервере; нет авторизации, облачной базы данных и синхронизации между устройствами.')
