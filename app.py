@@ -54,8 +54,7 @@ def pending(): return [t for t in st.session_state.tasks if not t.get('done',Fal
 def ranked(): return sorted(pending(),key=lambda t:(-priority(t),days_left(t),-int(t['difficulty'])))
 
 st.sidebar.title('🎓 AI Planner')
-page=st.sidebar.radio('Навигация',['🏠 Главная','📚 Мои задания','🧠 AI-анализ','🗓️ Расписание','ℹ️ О проекте'])
-st.sidebar.caption('Данные сохраняются в tasks.json на сервере приложения. На бесплатном облачном хостинге они могут исчезнуть при перезапуске.')
+page=st.sidebar.radio('Навигация',['🏠 Главная','📚 Мои задания','🧠 AI-анализ','🗓️ Расписание'])
 
 if page=='🏠 Главная':
     st.title('🎓 AI Student Planner 2.0')
@@ -109,7 +108,6 @@ elif page=='📚 Мои задания':
 
 elif page=='🧠 AI-анализ':
     st.title('🧠 Анализ приоритетов')
-    st.info('Модель RandomForestClassifier обучена на синтетических учебных примерах по правилам срочности, сложности и трудоёмкости. Это демонстрационный ML-прототип, а не проверенная модель на реальных студенческих данных.')
     tasks=ranked()
     if tasks:
         rows=[]
