@@ -1,190 +1,162 @@
 import json
-import math
-import os
-import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
-
+import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.ensemble import RandomForestClassifier
 
-st.set_page_config(page_title="AI Student Planner", page_icon="🎓", layout="wide")
-DATA_FILE = Path(os.getenv("PLANNER_DATA_FILE", "tasks.json"))
+st.set_page_config(page_title='AI Student Planner 2.0', page_icon='🎓', layout='wide')
+DATA = Path(__file__).with_name('tasks.json')
+st.markdown('''<style> .stApp{background:#10131d;color:#e8edf8} [data-testid="stSidebar"]{background:#171d2b} div[data-testid="stMetric"]{background:#1c2942;padding:18px;border-radius:16px;border:1px solid #34435d} h1,h2,h3{color:#f2f5ff} .stButton>button[kind="primary"]{background:#6574ed;border:0;border-radius:10px} </style>''', unsafe_allow_html=True)
 
-
-def load_tasks():
+def load():
+    if not DATA.exists(): return []
     try:
-        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError, TypeError):
-        return []
+        value=json.loads(DATA.read_text(encoding='utf-8'))
+        return value if isinstance(value,list) else []
+    except (OSError,ValueError): return []
 
+def save():
+    DATA.write_text(json.dumps(st.session_state.tasks,ensure_ascii=False,indent=2),encoding='utf-8')
 
-def save_tasks():
-    try:
-        DATA_FILE.write_text(json.dumps(st.session_state.tasks, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True
-    except OSError as exc:
-        st.error(f"Не удалось сохранить данные: {exc}")
-        return False
+if 'tasks' not in st.session_state: st.session_state.tasks=load()
 
+def days_left(t): return (date.fromisoformat(t['deadline'])-date.today()).days
 
-if "tasks" not in st.session_state:
-    st.session_state.tasks = load_tasks()
+def features(t): return [max(-10,min(90,days_left(t))),int(t['difficulty']),float(t['hours'])]
 
+# Учебная модель: демонстрационные синтетические примеры, не реальные ответы студентов.
+@st.cache_resource
+def get_model():
+    rng=np.random.default_rng(42)
+    days=rng.integers(-5,61,1800)
+    diff=rng.integers(1,6,1800)
+    hours=rng.uniform(.5,15,1800)
+    urgency=np.where(days<=0,55,np.where(days<=2,45,np.where(days<=7,30,np.where(days<=14,15,0))))
+    scores=urgency+diff*7+np.minimum(hours,12)*2
+    labels=np.where(scores>=73,2,np.where(scores>=47,1,0))
+    X=np.column_stack((days,diff,hours))
+    model=RandomForestClassifier(n_estimators=120,max_depth=9,random_state=42)
+    model.fit(X,labels)
+    return model
 
-def priority(task):
-    days = (date.fromisoformat(task["deadline"]) - date.today()).days
-    urgency = 60 if days < 0 else 50 if days == 0 else 40 if days == 1 else 30 if days <= 3 else 20 if days <= 7 else 10
-    score = urgency + int(task["difficulty"]) * 6 + min(float(task["hours"]), 12) * 1.5
-    return round(min(score, 100), 1)
+MODEL=get_model()
+LEVEL={0:'🟢 Низкий',1:'🟠 Средний',2:'🔴 Высокий'}
 
+def priority(t):
+    label=int(MODEL.predict([features(t)])[0])
+    days=days_left(t)
+    # Просроченные задачи всегда критические, независимо от оценки модели.
+    if days<0: label=2
+    return label
 
-def priority_label(score):
-    return "🔴 Высокий" if score >= 65 else "🟠 Средний" if score >= 40 else "🟢 Низкий"
+def pending(): return [t for t in st.session_state.tasks if not t.get('done',False)]
 
+def ranked(): return sorted(pending(),key=lambda t:(-priority(t),days_left(t),-int(t['difficulty'])))
 
-def task_table(tasks):
-    rows = []
-    for t in tasks:
-        rows.append({"Задание": t["name"], "Предмет": t["subject"], "Дедлайн": t["deadline"],
-                     "Сложность": t["difficulty"], "Часы": t["hours"],
-                     "Приоритет": priority_label(priority(t)), "Баллы": priority(t)})
-    return pd.DataFrame(rows)
+st.sidebar.title('🎓 AI Planner')
+page=st.sidebar.radio('Навигация',['🏠 Главная','📚 Мои задания','🧠 AI-анализ','🗓️ Расписание','ℹ️ О проекте'])
+st.sidebar.caption('Данные сохраняются в tasks.json на сервере приложения. На бесплатном облачном хостинге они могут исчезнуть при перезапуске.')
 
+if page=='🏠 Главная':
+    st.title('🎓 AI Student Planner 2.0')
+    st.caption('Планируй задачи, оценивай приоритеты и распределяй время')
+    tasks=st.session_state.tasks
+    done=sum(bool(t.get('done')) for t in tasks)
+    cols=st.columns(4)
+    for col,label,value in zip(cols,['Всего заданий','Выполнено','Осталось','Прогресс'],[len(tasks),done,len(tasks)-done,f'{done/len(tasks)*100:.0f}%' if tasks else '0%']): col.metric(label,value)
+    st.progress(done/len(tasks) if tasks else 0)
+    st.subheader('Что делать в первую очередь')
+    for t in ranked()[:5]:
+        d=days_left(t)
+        st.info(f"{LEVEL[priority(t)]} · **{t['name']}** ({t['subject']}) · {('просрочено на '+str(-d)+' дн.') if d<0 else ('осталось '+str(d)+' дн.')} · {t['hours']} ч")
+    if not pending(): st.success('Добавь первое задание или все задачи уже выполнены!')
 
-def schedule(tasks, hours_per_day, horizon):
-    pending = sorted((t for t in tasks if not t["done"]),
-                     key=lambda t: (-priority(t), t["deadline"]))
-    remaining = {t["id"]: float(t["hours"]) for t in pending}
-    result = []
-    for offset in range(horizon):
-        current = date.today() + timedelta(days=offset)
-        available = hours_per_day
-        for task in pending:
-            if available <= 0:
-                break
-            if remaining[task["id"]] <= 0:
-                continue
-            if current > date.fromisoformat(task["deadline"]):
-                continue
-            assigned = round(min(remaining[task["id"]], available), 2)
-            if assigned > 0:
-                result.append({"Дата": current.isoformat(), "Задание": task["name"],
-                               "Предмет": task["subject"], "Часов": assigned,
-                               "Дедлайн": task["deadline"]})
-                remaining[task["id"]] -= assigned
-                available -= assigned
-    unscheduled = [(t, round(remaining[t["id"]], 2)) for t in pending if remaining[t["id"]] > 0.001]
-    return result, unscheduled
-
-
-st.markdown("""<style>
-.block-container {padding-top: 2rem; max-width: 1250px;}
-[data-testid="stMetric"] {background: #18243a; padding: 18px; border-radius: 14px;}
-[data-testid="stMetricLabel"] {color: #cbd5e1;}
-h1, h2, h3 {letter-spacing: -.02em;}
-</style>""", unsafe_allow_html=True)
-
-with st.sidebar:
-    st.title("🎓 AI Planner")
-    page = st.radio("Навигация", ["🏠 Главная", "📚 Мои задания", "🧠 AI-анализ", "📅 Расписание"])
-    st.caption("Умное планирование учёбы")
-
-all_tasks = st.session_state.tasks
-pending = [t for t in all_tasks if not t["done"]]
-completed = len(all_tasks) - len(pending)
-
-if page == "🏠 Главная":
-    st.title("🎓 AI Student Planner")
-    st.caption("Планируй задачи, оценивай приоритеты и распределяй время")
-    a, b, c, d = st.columns(4)
-    a.metric("Всего заданий", len(all_tasks))
-    b.metric("Выполнено", completed)
-    c.metric("Осталось", len(pending))
-    d.metric("Прогресс", f"{completed / len(all_tasks):.0%}" if all_tasks else "0%")
-    st.progress(completed / len(all_tasks) if all_tasks else 0)
-    st.subheader("Что делать в первую очередь")
-    if pending:
-        top = sorted(pending, key=lambda t: (-priority(t), t["deadline"]))[:5]
-        st.dataframe(task_table(top), hide_index=True, use_container_width=True)
-    else:
-        st.info("Добавь первое задание в разделе «Мои задания».")
-
-elif page == "📚 Мои задания":
-    st.title("📚 Мои задания")
-    with st.form("new_task", clear_on_submit=True):
-        st.subheader("Добавить задание")
-        name = st.text_input("Название задания")
-        subject = st.text_input("Предмет")
-        deadline = st.date_input("Срок сдачи", value=date.today() + timedelta(days=3))
-        difficulty = st.slider("Сложность", 1, 5, 3)
-        hours = st.number_input("Время выполнения (часы)", min_value=0.5, max_value=100.0, value=2.0, step=0.5)
-        submitted = st.form_submit_button("➕ Добавить задание", type="primary")
-        if submitted:
-            if not name.strip() or not subject.strip():
-                st.warning("Заполни название задания и предмет.")
+elif page=='📚 Мои задания':
+    st.title('📚 Мои задания')
+    with st.form('add',clear_on_submit=True):
+        name=st.text_input('Название задания')
+        subject=st.text_input('Предмет')
+        deadline=st.date_input('Дедлайн',value=date.today()+timedelta(days=3))
+        difficulty=st.slider('Сложность',1,5,3)
+        hours=st.number_input('Необходимое время (часы)',min_value=.5,max_value=100.,value=2.,step=.5)
+        if st.form_submit_button('➕ Добавить задание',type='primary'):
+            if not name.strip() or not subject.strip(): st.error('Заполни название и предмет.')
             else:
-                all_tasks.append({"id": str(uuid.uuid4()), "name": name.strip(), "subject": subject.strip(),
-                                  "deadline": deadline.isoformat(), "difficulty": difficulty,
-                                  "hours": float(hours), "done": False})
-                save_tasks()
-                st.rerun()
-    st.subheader("Список заданий")
-    if not all_tasks:
-        st.info("Пока заданий нет.")
-    for t in list(all_tasks):
-        col1, col2, col3 = st.columns([6, 2, 1])
-        with col1:
-            st.write(f"**{t['name']}** · {t['subject']} · до {t['deadline']} · {t['hours']} ч")
-            st.caption(f"{priority_label(priority(t))} · сложность {t['difficulty']}/5")
-        with col2:
-            done = st.checkbox("Выполнено", value=t["done"], key=f"done_{t['id']}")
-            if done != t["done"]:
-                t["done"] = done
-                save_tasks()
-                st.rerun()
-        with col3:
-            if st.button("🗑️", key=f"del_{t['id']}", help="Удалить задание"):
-                all_tasks.remove(t)
-                save_tasks()
-                st.rerun()
-        st.divider()
+                import uuid
+                st.session_state.tasks.append(dict(id=str(uuid.uuid4()),name=name.strip(),subject=subject.strip(),deadline=deadline.isoformat(),difficulty=difficulty,hours=float(hours),done=False))
+                save();st.rerun()
+    st.divider()
+    for t in list(st.session_state.tasks):
+        with st.expander(('✅ ' if t.get('done') else '📌 ')+t['name']+' · '+t['subject']):
+            with st.form('edit_'+t['id']):
+                n=st.text_input('Название',value=t['name'])
+                s=st.text_input('Предмет',value=t['subject'])
+                d=st.date_input('Дедлайн',value=date.fromisoformat(t['deadline']))
+                dif=st.slider('Сложность',1,5,int(t['difficulty']))
+                h=st.number_input('Часы',min_value=.5,max_value=100.,value=float(t['hours']),step=.5)
+                done=st.checkbox('Выполнено',value=bool(t.get('done')))
+                c1,c2=st.columns(2)
+                update=c1.form_submit_button('💾 Сохранить')
+                delete=c2.form_submit_button('🗑️ Удалить')
+                if update:
+                    if n.strip() and s.strip():
+                        t.update(name=n.strip(),subject=s.strip(),deadline=d.isoformat(),difficulty=dif,hours=float(h),done=done)
+                        save();st.rerun()
+                    else: st.error('Название и предмет обязательны.')
+                if delete:
+                    st.session_state.tasks=[x for x in st.session_state.tasks if x['id']!=t['id']]
+                    save();st.rerun()
 
-elif page == "🧠 AI-анализ":
-    st.title("🧠 Анализ приоритетов")
-    st.info("Приоритет рассчитывается по понятным правилам: близость дедлайна, сложность и время выполнения. Это алгоритм, а не обученная нейросеть.")
-    if pending:
-        ranked = sorted(pending, key=lambda t: (-priority(t), t["deadline"]))
-        st.dataframe(task_table(ranked), hide_index=True, use_container_width=True)
-        st.subheader("Рекомендация")
-        first = ranked[0]
-        days = (date.fromisoformat(first["deadline"]) - date.today()).days
-        when = "срок уже прошёл" if days < 0 else "сегодня" if days == 0 else f"через {days} дн."
-        st.success(f"Начни с «{first['name']}» ({first['subject']}): дедлайн {when}, сложность {first['difficulty']}/5, потребуется около {first['hours']} ч.")
-        st.bar_chart(pd.DataFrame({"Задание": [t["name"] for t in ranked],
-                                   "Приоритет": [priority(t) for t in ranked]}).set_index("Задание"))
-    else:
-        st.info("Добавь незавершённые задания для анализа.")
+elif page=='🧠 AI-анализ':
+    st.title('🧠 Анализ приоритетов')
+    st.info('Модель RandomForestClassifier обучена на синтетических учебных примерах по правилам срочности, сложности и трудоёмкости. Это демонстрационный ML-прототип, а не проверенная модель на реальных студенческих данных.')
+    tasks=ranked()
+    if tasks:
+        rows=[]
+        for t in tasks:
+            rows.append({'Задание':t['name'],'Предмет':t['subject'],'Дедлайн':t['deadline'],'Дней осталось':days_left(t),'Сложность':t['difficulty'],'Часы':t['hours'],'Приоритет':LEVEL[priority(t)]})
+        df=pd.DataFrame(rows)
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        st.subheader('Количество задач по приоритетам')
+        st.bar_chart(df['Приоритет'].value_counts())
+        first=tasks[0]
+        st.success(f"Рекомендуем начать с «{first['name']}» ({first['subject']}): приоритет {LEVEL[priority(first)]}, срок {first['deadline']}, примерно {first['hours']} ч.")
+    else: st.info('Добавь хотя бы одно невыполненное задание.')
 
-elif page == "📅 Расписание":
-    st.title("📅 Умное расписание")
-    hours_per_day = st.slider("Сколько часов в день готов учиться?", 1, 12, 3)
-    horizon = st.slider("План на сколько дней?", 3, 30, 14)
-    if pending:
-        rows, unscheduled = schedule(pending, hours_per_day, horizon)
-        if rows:
-            df = pd.DataFrame(rows)
-            st.dataframe(df, hide_index=True, use_container_width=True)
-            st.bar_chart(df.groupby("Дата")["Часов"].sum())
-            st.download_button("📥 Скачать расписание CSV", df.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="student_schedule.csv", mime="text/csv")
-        else:
-            st.warning("Не удалось распределить задания до их дедлайнов.")
-        if unscheduled:
-            st.warning("Не хватает времени до дедлайнов или в выбранном периоде для некоторых заданий:")
-            for t, hours_left in unscheduled:
-                st.write(f"• {t['name']}: осталось {hours_left} ч (до {t['deadline']})")
-    else:
-        st.info("Добавь задания, чтобы составить расписание.")
-    st.caption("План формируется по приоритету и свободным часам. Он не учитывает конкретные часы занятий и выходные.")
+elif page=='🗓️ Расписание':
+    st.title('🗓️ Умное расписание')
+    per_day=st.slider('Сколько часов в день готов учиться?',1,12,3)
+    horizon=st.slider('На сколько дней составить план?',1,30,14)
+    tasks=ranked()
+    remaining={t['id']:float(t['hours']) for t in tasks}
+    rows=[]
+    for offset in range(horizon):
+        current=date.today()+timedelta(days=offset)
+        capacity=float(per_day)
+        for t in tasks:
+            if capacity<=.001: break
+            if remaining[t['id']]<=.001: continue
+            # Планирование после дедлайна не допускается; просроченные задачи ставятся сразу.
+            if date.fromisoformat(t['deadline'])<current and days_left(t)>=0: continue
+            amount=min(capacity,remaining[t['id']])
+            rows.append({'Дата':current.isoformat(),'Задание':t['name'],'Предмет':t['subject'],'Часов':round(amount,2),'Дедлайн':t['deadline']})
+            remaining[t['id']]-=amount
+            capacity-=amount
+    if rows:
+        df=pd.DataFrame(rows)
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        st.bar_chart(df.groupby('Дата')['Часов'].sum())
+        st.download_button('⬇️ Скачать расписание CSV',df.to_csv(index=False).encode('utf-8-sig'),'schedule.csv','text/csv')
+    else: st.info('Добавь задания для создания расписания.')
+    unplanned=[t['name'] for t in tasks if remaining[t['id']]>.001]
+    if unplanned: st.warning('Не удалось полностью распределить в выбранном периоде: '+', '.join(unplanned)+'. Увеличь количество часов или период планирования.')
+    st.caption('Алгоритм распределяет задачи по приоритету и дедлайну. Это эвристический планировщик, не оптимизационная нейросеть.')
+
+else:
+    st.title('ℹ️ О проекте')
+    st.write('AI Student Planner — учебный веб-прототип для управления учебными задачами.')
+    st.write('Технологии: Python, Streamlit, Pandas, NumPy, scikit-learn.')
+    st.write('ML: RandomForestClassifier на синтетических данных. Реальное качество модели на студентах пока не оценивалось.')
+    st.write('Ограничения: данные хранятся локально на сервере; нет авторизации, облачной базы данных и синхронизации между устройствами.')
